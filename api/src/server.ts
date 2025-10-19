@@ -1,66 +1,172 @@
 import 'dotenv/config';
-import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { getSupabaseClient } from './db/connection';
-import { projectsRoute } from './routes/projects';
+import { serve } from '@hono/node-server';
+import projects from './routes/projects.js';
+import { getSupabaseClient } from './db/connection.js';
 
 const app = new Hono();
 
-const allowedOrigin = process.env.CORS_ORIGIN;
-
-const RATE_LIMIT_WINDOW_MS = 60_000;
-const RATE_LIMIT_MAX_REQUESTS = 5;
-type RateLimitRecord = {
-  count: number;
-  windowStart: number;
-};
-
-const rateLimitBuckets = new Map<string, RateLimitRecord>();
-
-app.onError((err, c) => {
-  if (err instanceof HTTPException) {
-    const status = err.status ?? 500;
-    const message = err.message ?? 'Request error';
-    return c.json({ error: message }, status);
-  }
-
-  return c.json({ error: 'Internal Server Error' }, 500);
-});
-
-const corsMiddleware = async (c: Context, next: () => Promise<void>) => {
-  const requestOrigin = c.req.header('Origin');
-
-  if (requestOrigin) {
-    if (!allowedOrigin) {
-      throw new HTTPException(500, { message: 'CORS origin is not configured' });
-    }
-
-    if (requestOrigin !== allowedOrigin) {
-      return c.json({ error: 'Origin not allowed' }, 403);
-    }
-
-    c.res.headers.set('Access-Control-Allow-Origin', allowedOrigin);
-  } else if (allowedOrigin) {
-    c.res.headers.set('Access-Control-Allow-Origin', allowedOrigin);
-  }
-  c.res.headers.append('Vary', 'Origin');
+const ORIGIN = process.env.CORS_ORIGIN || '*';
+app.use('*', async (c, next) => {
+  c.res.headers.set('Access-Control-Allow-Origin', ORIGIN);
   c.res.headers.set('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
-  c.res.headers.set('Access-Control-Allow-Headers', 'Content-Type');
+  c.res.headers.set('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+  c.res.headers.append('Vary', 'Origin');
 
   if (c.req.method === 'OPTIONS') {
     return c.body(null, 204);
   }
 
-  await next();
+  return next();
+});
+
+app.onError((err, c) => {
+  if (err instanceof HTTPException) {
+    return err.getResponse();
+  }
+
+  console.error(err);
+  return c.json({ error: 'server_error' }, 500);
+});
+
+try {
+  getSupabaseClient();
+  console.log('DB=supabase');
+} catch (error) {
+  console.error('Failed to initialize Supabase client', error);
+  throw error;
+}
+
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_REQUESTS = 5;
+const rateLimitBuckets = new Map<string, { count: number; windowStart: number }>();
+
+const readPromptFromBody = async (c: Context) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch (error) {
+    throw new HTTPException(400, { message: 'Invalid JSON payload' });
+  }
+
+  const prompt = (body as Record<string, unknown>).prompt;
+
+  if (typeof prompt !== 'string' || prompt.trim().length === 0) {
+    throw new HTTPException(400, { message: 'Prompt is required' });
+  }
+
+  return prompt.trim();
 };
 
-app.use('*', corsMiddleware);
+const enforceRateLimit = (c: Context) => {
+  const identifier = c.req.header('x-forwarded-for') ?? c.req.header('cf-connecting-ip') ?? c.req.header('x-real-ip') ?? c.req.header('x-client-ip') ?? c.req.header('x-appengine-user-ip') ?? c.req.header('x-forwarded-host') ?? c.req.header('x-forwarded-proto') ?? c.req.header('x-request-id') ?? c.req.header('x-api-key') ?? c.req.header('authorization') ?? c.req.header('host') ?? 'anonymous';
+  const now = Date.now();
+  const record = rateLimitBuckets.get(identifier);
+
+  if (!record || now - record.windowStart > RATE_LIMIT_WINDOW_MS) {
+    rateLimitBuckets.set(identifier, { count: 1, windowStart: now });
+    return;
+  }
+
+  if (record.count >= RATE_LIMIT_MAX_REQUESTS) {
+    throw new HTTPException(429, { message: 'Too many requests' });
+  }
+
+  record.count += 1;
+  rateLimitBuckets.set(identifier, record);
+};
+
+const extractTextFromResponse = (payload: Record<string, unknown>) => {
+  const output = payload.output as unknown;
+  if (!Array.isArray(output)) {
+    return undefined;
+  }
+
+  for (const item of output) {
+    if (!item || typeof item !== 'object') {
+      continue;
+    }
+
+    const content = (item as Record<string, unknown>).content;
+    if (!Array.isArray(content)) {
+      continue;
+    }
+
+    for (const part of content) {
+      if (!part || typeof part !== 'object') {
+        continue;
+      }
+
+      const text = (part as Record<string, unknown>).text;
+      if (typeof text === 'string' && text.trim().length > 0) {
+        return text.trim();
+      }
+    }
+  }
+
+  return undefined;
+};
+
+const extractTextFromGeminiResponse = (payload: Record<string, unknown>) => {
+  const candidates = payload.candidates as unknown;
+  if (!Array.isArray(candidates)) {
+    return undefined;
+  }
+
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== 'object') {
+      continue;
+    }
+
+    const content = (candidate as Record<string, unknown>).content;
+    if (!content || typeof content !== 'object') {
+      continue;
+    }
+
+    const parts = (content as Record<string, unknown>).parts;
+    if (!Array.isArray(parts)) {
+      continue;
+    }
+
+    for (const part of parts) {
+      if (!part || typeof part !== 'object') {
+        continue;
+      }
+
+      const text = (part as Record<string, unknown>).text;
+      if (typeof text === 'string' && text.trim().length > 0) {
+        return text.trim();
+      }
+    }
+  }
+
+  return undefined;
+};
+
+const normalisePexelsPhoto = (photo: Record<string, unknown>) => {
+  const id = typeof photo.id === 'number' ? photo.id : undefined;
+  const photographer = typeof photo.photographer === 'string' ? photo.photographer : undefined;
+  const url = typeof photo.url === 'string' ? photo.url : undefined;
+  const src = (photo.src ?? {}) as Record<string, unknown>;
+
+  return {
+    id,
+    photographer,
+    url,
+    src: {
+      original: typeof src.original === 'string' ? src.original : undefined,
+      large: typeof src.large === 'string' ? src.large : undefined,
+      medium: typeof src.medium === 'string' ? src.medium : undefined,
+      small: typeof src.small === 'string' ? src.small : undefined,
+    },
+  };
+};
 
 app.get('/health', (c) => c.json({ ok: true }));
 
-app.route('/projects', projectsRoute);
+app.route('/projects', projects);
 
 app.post('/ai/complete', async (c) => {
   enforceRateLimit(c);
@@ -73,7 +179,7 @@ app.post('/ai/complete', async (c) => {
     throw new HTTPException(500, { message: 'OpenAI API key is not configured' });
   }
 
-  let response: Awaited<ReturnType<typeof fetch>>;
+  let response: Response;
   try {
     response = await fetch('https://api.openai.com/v1/responses', {
       method: 'POST',
@@ -118,7 +224,7 @@ app.post('/ai/gemini', async (c) => {
 
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-  let response: Awaited<ReturnType<typeof fetch>>;
+  let response: Response;
   try {
     response = await fetch(endpoint, {
       method: 'POST',
@@ -175,7 +281,7 @@ app.get('/search', async (c) => {
   const baseEndpoint = endpoint.endsWith('/') ? endpoint.slice(0, -1) : endpoint;
   const searchUrl = `${baseEndpoint}/indexes/${encodeURIComponent(index)}/docs/search?api-version=2023-11-01`;
 
-  let response: Awaited<ReturnType<typeof fetch>>;
+  let response: Response;
   try {
     response = await fetch(searchUrl, {
       method: 'POST',
@@ -200,36 +306,46 @@ app.get('/search', async (c) => {
     });
   }
 
-  const payload = (await response.json()) as AzureSearchResponse;
-  const hits = Array.isArray(payload.value) ? payload.value.map(normalizeAzureHit) : [];
+  const result = (await response.json()) as Record<string, unknown>;
+  const hits = Array.isArray(result.value)
+    ? result.value.map((item) => {
+        if (!item || typeof item !== 'object') {
+          return {};
+        }
+        const record = item as Record<string, unknown>;
+        return {
+          id: record['@search.document'] ?? record.id ?? record.key,
+          score: record['@search.score'],
+          ...record,
+        };
+      })
+    : [];
 
   return c.json({ hits });
 });
 
 app.get('/media/pexels', async (c) => {
   const query = c.req.query('query')?.trim();
-
   if (!query) {
     throw new HTTPException(400, { message: 'Query parameter "query" is required' });
   }
 
-  const page = parsePositiveInt(c.req.query('page'), 1);
-  const perPage = parsePositiveInt(c.req.query('per_page'), 10);
+  const page = Number.parseInt(c.req.query('page') ?? '1', 10);
+  const perPage = Number.parseInt(c.req.query('per_page') ?? '10', 10);
 
   const apiKey = process.env.PEXELS_API_KEY;
-
   if (!apiKey) {
     throw new HTTPException(500, { message: 'Pexels API key is not configured' });
   }
 
-  const url = new URL('https://api.pexels.com/v1/search');
-  url.searchParams.set('query', query);
-  url.searchParams.set('page', String(page));
-  url.searchParams.set('per_page', String(perPage));
+  const searchUrl = new URL('https://api.pexels.com/v1/search');
+  searchUrl.searchParams.set('query', query);
+  searchUrl.searchParams.set('page', Number.isFinite(page) && page > 0 ? String(page) : '1');
+  searchUrl.searchParams.set('per_page', Number.isFinite(perPage) && perPage > 0 ? String(perPage) : '10');
 
-  let response: Awaited<ReturnType<typeof fetch>>;
+  let response: Response;
   try {
-    response = await fetch(url, {
+    response = await fetch(searchUrl, {
       headers: {
         Authorization: apiKey,
       },
@@ -244,312 +360,20 @@ app.get('/media/pexels', async (c) => {
     throw new HTTPException(502, { message: `Pexels API error: ${errorText}` });
   }
 
-  const payload = (await response.json()) as PexelsSearchResponse;
-
-  return c.json(normalizePexelsResponse(payload, page, perPage));
-});
-
-const extractTextFromResponse = (payload: Record<string, unknown>): string | undefined => {
-  const output = payload.output;
-  if (Array.isArray(output)) {
-    for (const item of output) {
-      const content = (item as { content?: unknown }).content;
-      if (Array.isArray(content)) {
-        for (const part of content) {
-          const text = (part as { type?: string; text?: string }).text;
-          if (typeof text === 'string' && text.trim()) {
-            return text.trim();
-          }
-        }
-      }
-    }
-  }
-
-  const choices = payload.choices;
-  if (Array.isArray(choices)) {
-    for (const choice of choices) {
-      const message = (choice as { message?: { content?: string } }).message;
-      const content = message?.content;
-      if (typeof content === 'string' && content.trim()) {
-        return content.trim();
-      }
-    }
-  }
-
-  return undefined;
-};
-
-const extractTextFromGeminiResponse = (payload: Record<string, unknown>): string | undefined => {
-  const candidates = payload.candidates;
-  if (Array.isArray(candidates)) {
-    for (const candidate of candidates) {
-      const content = (candidate as { content?: { parts?: Array<{ text?: string }> } }).content;
-      const parts = content?.parts;
-      if (Array.isArray(parts)) {
-        for (const part of parts) {
-          const text = part?.text;
-          if (typeof text === 'string' && text.trim()) {
-            return text.trim();
-          }
-        }
-      }
-    }
-  }
-
-  const promptFeedback = payload.promptFeedback as { safetyRatings?: Array<{ blocked?: boolean }> } | undefined;
-  if (promptFeedback?.safetyRatings && Array.isArray(promptFeedback.safetyRatings)) {
-    const blocked = promptFeedback.safetyRatings.some((rating) => rating?.blocked === true);
-    if (blocked) {
-      return undefined;
-    }
-  }
-
-  return undefined;
-};
-
-const readPromptFromBody = async (c: Context): Promise<string> => {
-  let body: unknown;
-  try {
-    body = await c.req.json();
-  } catch {
-    throw new HTTPException(400, { message: 'Invalid JSON body' });
-  }
-
-  const prompt = typeof (body as { prompt?: unknown }).prompt === 'string' ? (body as { prompt: string }).prompt.trim() : '';
-
-  if (!prompt) {
-    throw new HTTPException(400, { message: 'Prompt is required' });
-  }
-
-  return prompt;
-};
-
-type AzureSearchHit = Record<string, unknown> & {
-  '@search.score'?: number;
-  '@search.highlights'?: Record<string, unknown>;
-  '@search.documentId'?: string;
-};
-
-type AzureSearchResponse = {
-  value?: AzureSearchHit[];
-};
-
-type NormalizedHighlightRecord = Record<string, string[]>;
-
-type NormalizedAzureHit = {
-  id?: string;
-  score?: number;
-  highlights?: NormalizedHighlightRecord;
-  document: Record<string, unknown>;
-};
-
-const normalizeAzureHit = (hit: AzureSearchHit): NormalizedAzureHit => {
-  const {
-    ['@search.score']: score,
-    ['@search.highlights']: highlights,
-    ['@search.documentId']: documentId,
-    ...document
-  } = hit;
-
-  const normalizedHighlights = normalizeHighlights(highlights);
-
-  const idCandidate =
-    typeof document.id === 'string'
-      ? (document.id as string)
-      : typeof document.key === 'string'
-      ? (document.key as string)
-      : typeof documentId === 'string'
-      ? documentId
-      : undefined;
-
-  return {
-    id: idCandidate,
-    score: typeof score === 'number' ? score : undefined,
-    highlights: normalizedHighlights,
-    document: document as Record<string, unknown>,
-  };
-};
-
-const normalizeHighlights = (value: unknown): NormalizedHighlightRecord | undefined => {
-  if (!value || typeof value !== 'object') {
-    return undefined;
-  }
-
-  const result: NormalizedHighlightRecord = {};
-
-  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-    if (!Array.isArray(raw)) {
-      continue;
-    }
-
-    const strings = raw.filter((item): item is string => typeof item === 'string');
-    if (strings.length > 0) {
-      result[key] = strings;
-    }
-  }
-
-  return Object.keys(result).length > 0 ? result : undefined;
-};
-
-const parsePositiveInt = (value: string | undefined, fallback: number): number => {
-  if (!value) {
-    return fallback;
-  }
-
-  const parsed = Number.parseInt(value, 10);
-
-  if (Number.isNaN(parsed) || parsed <= 0) {
-    return fallback;
-  }
-
-  return parsed;
-};
-
-type PexelsPhotoSrc = {
-  original?: string;
-  large?: string;
-  medium?: string;
-  small?: string;
-};
-
-type PexelsPhoto = {
-  id?: number;
-  photographer?: string;
-  url?: string;
-  src?: PexelsPhotoSrc;
-};
-
-type PexelsSearchResponse = {
-  photos?: PexelsPhoto[];
-  page?: number;
-  per_page?: number;
-  total_results?: number;
-};
-
-type NormalizedPexelsPhoto = {
-  id?: number;
-  photographer?: string;
-  url?: string;
-  src: {
-    original?: string;
-    large?: string;
-    medium?: string;
-    small?: string;
-  };
-};
-
-type NormalizedPexelsResponse = {
-  photos: NormalizedPexelsPhoto[];
-  page: number;
-  per_page: number;
-  total_results: number;
-};
-
-const normalizePexelsResponse = (
-  payload: PexelsSearchResponse,
-  fallbackPage: number,
-  fallbackPerPage: number,
-): NormalizedPexelsResponse => {
-  const photos = Array.isArray(payload.photos)
-    ? payload.photos.map(normalizePexelsPhoto).filter((photo): photo is NormalizedPexelsPhoto => Boolean(photo))
+  const result = (await response.json()) as Record<string, unknown>;
+  const photos = Array.isArray(result.photos)
+    ? result.photos.map((photo) => normalisePexelsPhoto((photo ?? {}) as Record<string, unknown>))
     : [];
 
-  const page = typeof payload.page === 'number' && payload.page > 0 ? payload.page : fallbackPage;
-  const perPage = typeof payload.per_page === 'number' && payload.per_page > 0 ? payload.per_page : fallbackPerPage;
-  const totalResults = typeof payload.total_results === 'number' && payload.total_results >= 0 ? payload.total_results : photos.length;
-
-  return {
+  return c.json({
     photos,
-    page,
-    per_page: perPage,
-    total_results: totalResults,
-  };
-};
-
-const normalizePexelsPhoto = (photo: PexelsPhoto): NormalizedPexelsPhoto | undefined => {
-  if (!photo || typeof photo !== 'object') {
-    return undefined;
-  }
-
-  const id = typeof photo.id === 'number' ? photo.id : undefined;
-  const photographer = typeof photo.photographer === 'string' ? photo.photographer : undefined;
-  const url = typeof photo.url === 'string' ? photo.url : undefined;
-  const src = normalizePexelsPhotoSrc(photo.src);
-
-  return {
-    id,
-    photographer,
-    url,
-    src,
-  };
-};
-
-const normalizePexelsPhotoSrc = (src: PexelsPhotoSrc | undefined): NormalizedPexelsPhoto['src'] => {
-  const result: NormalizedPexelsPhoto['src'] = {};
-
-  if (src && typeof src === 'object') {
-    if (typeof src.original === 'string') {
-      result.original = src.original;
-    }
-    if (typeof src.large === 'string') {
-      result.large = src.large;
-    }
-    if (typeof src.medium === 'string') {
-      result.medium = src.medium;
-    }
-    if (typeof src.small === 'string') {
-      result.small = src.small;
-    }
-  }
-
-  return result;
-};
-
-const enforceRateLimit = (c: Context): void => {
-  const key = getRateLimitKey(c);
-  const now = Date.now();
-  const existing = rateLimitBuckets.get(key);
-
-  if (!existing || now - existing.windowStart >= RATE_LIMIT_WINDOW_MS) {
-    rateLimitBuckets.set(key, {
-      count: 1,
-      windowStart: now,
-    });
-    return;
-  }
-
-  if (existing.count >= RATE_LIMIT_MAX_REQUESTS) {
-    throw new HTTPException(429, { message: 'Rate limit exceeded' });
-  }
-
-  existing.count += 1;
-};
-
-const getRateLimitKey = (c: Context): string => {
-  const headerCandidates = [
-    c.req.header('cf-connecting-ip'),
-    c.req.header('x-forwarded-for')?.split(',')[0]?.trim(),
-    c.req.header('x-real-ip'),
-    c.req.header('x-client-ip'),
-  ];
-
-  for (const candidate of headerCandidates) {
-    if (candidate && candidate.length > 0) {
-      return candidate;
-    }
-  }
-
-  return 'global';
-};
-
-const port = Number.parseInt(process.env.PORT ?? '8787', 10);
-
-getSupabaseClient();
-console.log('DB=supabase');
-
-serve({
-  fetch: app.fetch,
-  port,
+    page: typeof result.page === 'number' ? result.page : page,
+    per_page: typeof result.per_page === 'number' ? result.per_page : perPage,
+    total_results: typeof result.total_results === 'number' ? result.total_results : photos.length,
+  });
 });
 
-console.log(`API listening on :${port}`);
+const port = Number(process.env.PORT || 3000);
+serve({ fetch: app.fetch, port }, () => {
+  console.log(`API up on :${port}`);
+});

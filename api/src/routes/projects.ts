@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { PostgrestError } from '@supabase/supabase-js';
-import { getSupabaseClient } from '../db/connection';
+import { getSupabaseClient } from '../db/connection.js';
 
 type ProjectRow = {
   id: number;
@@ -31,9 +31,9 @@ const handleSupabaseError = (error: PostgrestError) => {
   throw new HTTPException(500, { message: `Supabase error: ${error.message}` });
 };
 
-export const projectsRoute = new Hono();
+const projects = new Hono();
 
-projectsRoute.get('/', async (c) => {
+projects.get('/', async (c) => {
   const { data, error } = await supabase
     .from('projects')
     .select('id, name, created_at, updated_at')
@@ -46,7 +46,7 @@ projectsRoute.get('/', async (c) => {
   return c.json(data ?? []);
 });
 
-projectsRoute.post('/', async (c) => {
+projects.post('/', async (c) => {
   let body: unknown;
   try {
     body = await c.req.json();
@@ -75,7 +75,7 @@ projectsRoute.post('/', async (c) => {
   return c.json(project, 201);
 });
 
-projectsRoute.patch('/:id', async (c) => {
+projects.patch('/:id', async (c) => {
   const id = parseId(c.req.param('id'));
 
   let body: Record<string, unknown>;
@@ -122,7 +122,7 @@ projectsRoute.patch('/:id', async (c) => {
   return c.json(project);
 });
 
-projectsRoute.delete('/:id', async (c) => {
+projects.delete('/:id', async (c) => {
   const id = parseId(c.req.param('id'));
 
   const { data, error } = await supabase
@@ -142,3 +142,5 @@ projectsRoute.delete('/:id', async (c) => {
 
   return c.body(null, 204);
 });
+
+export default projects;
