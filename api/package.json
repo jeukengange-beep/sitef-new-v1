@@ -2,21 +2,20 @@
   "name": "sitef-api",
   "version": "1.0.0",
   "private": true,
-  "main": "dist/server.js",
+  "type": "module",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts"
-  },
+    },
   "dependencies": {
-    "@hono/node-server": "^1.9.1",
-    "@supabase/supabase-js": "^2.45.3",
-    "dotenv": "^16.4.5",
-    "hono": "^4.5.3"
+    "hono": "^4.6.5",
+    "@hono/node-server": "^1.11.3",
+    "@supabase/supabase-js": "^2.46.1"
   },
   "devDependencies": {
-    "@types/node": "^20.12.7",
-    "tsx": "^4.7.1",
-    "typescript": "^5.4.5"
+    "typescript": "^5.4.5",
+    "tsx": "^4.16.0",
+    "@types/node": "^22.7.0"
   }
 }
