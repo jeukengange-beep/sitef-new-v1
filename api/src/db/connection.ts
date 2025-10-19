@@ -2,7 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 
-let instance: Database.Database | null = null;
+type SqliteDatabase = InstanceType<typeof Database>;
+
+let instance: SqliteDatabase | null = null;
 
 const resolveDatabasePath = () => {
   const configured = process.env.DATABASE_PATH;
@@ -17,7 +19,7 @@ const ensureDirectory = (filePath: string) => {
   fs.mkdirSync(directory, { recursive: true });
 };
 
-const applyMigrations = (database: Database.Database) => {
+const applyMigrations = (database: SqliteDatabase) => {
   const migrationsDir = path.resolve(process.cwd(), 'migrations');
   if (!fs.existsSync(migrationsDir)) {
     return;
@@ -31,12 +33,11 @@ const applyMigrations = (database: Database.Database) => {
     );
   `);
 
-  const applied = new Set<string>(
-    database
-      .prepare('SELECT name FROM __migrations ORDER BY name ASC')
-      .all()
-      .map((row) => row.name as string)
-  );
+  const migrationRows = database
+    .prepare('SELECT name FROM __migrations ORDER BY name ASC')
+    .all() as Array<{ name: string }>;
+
+  const applied = new Set<string>(migrationRows.map((row) => row.name));
 
   const migrationFiles = fs
     .readdirSync(migrationsDir)
@@ -61,7 +62,7 @@ const applyMigrations = (database: Database.Database) => {
   }
 };
 
-export const getDatabase = (): Database.Database => {
+export const getDatabase = (): SqliteDatabase => {
   if (instance) {
     return instance;
   }

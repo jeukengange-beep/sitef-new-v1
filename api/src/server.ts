@@ -133,6 +133,57 @@ app.post('/ai/gemini', async (c) => {
   return c.json({ text });
 });
 
+app.get('/search', async (c) => {
+  const query = c.req.query('q')?.trim();
+
+  if (!query) {
+    throw new HTTPException(400, { message: 'Query parameter "q" is required' });
+  }
+
+  const endpoint = process.env.AZURE_SEARCH_ENDPOINT;
+  const apiKey = process.env.AZURE_SEARCH_API_KEY;
+  const index = process.env.AZURE_SEARCH_INDEX;
+
+  if (!endpoint || !apiKey || !index) {
+    throw new HTTPException(500, {
+      message: 'Azure Search configuration is incomplete',
+    });
+  }
+
+  const baseEndpoint = endpoint.endsWith('/') ? endpoint.slice(0, -1) : endpoint;
+  const searchUrl = `${baseEndpoint}/indexes/${encodeURIComponent(index)}/docs/search?api-version=2023-11-01`;
+
+  let response: Awaited<ReturnType<typeof fetch>>;
+  try {
+    response = await fetch(searchUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'api-key': apiKey,
+      },
+      body: JSON.stringify({
+        search: query,
+        top: 10,
+      }),
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : 'Unknown error';
+    throw new HTTPException(502, { message: `Failed to reach Azure AI Search: ${reason}` });
+  }
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new HTTPException(502, {
+      message: `Azure AI Search error: ${errorText}`,
+    });
+  }
+
+  const payload = (await response.json()) as AzureSearchResponse;
+  const hits = Array.isArray(payload.value) ? payload.value.map(normalizeAzureHit) : [];
+
+  return c.json({ hits });
+});
+
 const extractTextFromResponse = (payload: Record<string, unknown>): string | undefined => {
   const output = payload.output;
   if (Array.isArray(output)) {
@@ -206,6 +257,73 @@ const readPromptFromBody = async (c: Context): Promise<string> => {
   }
 
   return prompt;
+};
+
+type AzureSearchHit = Record<string, unknown> & {
+  '@search.score'?: number;
+  '@search.highlights'?: Record<string, unknown>;
+  '@search.documentId'?: string;
+};
+
+type AzureSearchResponse = {
+  value?: AzureSearchHit[];
+};
+
+type NormalizedHighlightRecord = Record<string, string[]>;
+
+type NormalizedAzureHit = {
+  id?: string;
+  score?: number;
+  highlights?: NormalizedHighlightRecord;
+  document: Record<string, unknown>;
+};
+
+const normalizeAzureHit = (hit: AzureSearchHit): NormalizedAzureHit => {
+  const {
+    ['@search.score']: score,
+    ['@search.highlights']: highlights,
+    ['@search.documentId']: documentId,
+    ...document
+  } = hit;
+
+  const normalizedHighlights = normalizeHighlights(highlights);
+
+  const idCandidate =
+    typeof document.id === 'string'
+      ? (document.id as string)
+      : typeof document.key === 'string'
+      ? (document.key as string)
+      : typeof documentId === 'string'
+      ? documentId
+      : undefined;
+
+  return {
+    id: idCandidate,
+    score: typeof score === 'number' ? score : undefined,
+    highlights: normalizedHighlights,
+    document: document as Record<string, unknown>,
+  };
+};
+
+const normalizeHighlights = (value: unknown): NormalizedHighlightRecord | undefined => {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+
+  const result: NormalizedHighlightRecord = {};
+
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!Array.isArray(raw)) {
+      continue;
+    }
+
+    const strings = raw.filter((item): item is string => typeof item === 'string');
+    if (strings.length > 0) {
+      result[key] = strings;
+    }
+  }
+
+  return Object.keys(result).length > 0 ? result : undefined;
 };
 
 const port = Number.parseInt(process.env.PORT ?? '8787', 10);
