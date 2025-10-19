@@ -6,8 +6,7 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/server.js",
-    "dev": "tsx watch src/server.ts",
-    "migrate": "tsx src/scripts/migrate.ts"
+    "dev": "tsx watch src/server.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.9.1",

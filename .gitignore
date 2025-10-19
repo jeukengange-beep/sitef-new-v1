@@ -4,5 +4,4 @@ frontend/node_modules/
 frontend/dist/
 api/node_modules/
 api/dist/
-api/sitefactory.dev.db
 *.log

@@ -545,6 +545,7 @@ const getRateLimitKey = (c: Context): string => {
 const port = Number.parseInt(process.env.PORT ?? '8787', 10);
 
 getSupabaseClient();
+console.log('DB=supabase');
 
 serve({
   fetch: app.fetch,
