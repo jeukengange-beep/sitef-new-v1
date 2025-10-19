@@ -3,7 +3,7 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { getDatabase } from './db/connection';
+import { getSupabaseClient } from './db/connection';
 import { projectsRoute } from './routes/projects';
 
 const app = new Hono();
@@ -328,7 +328,7 @@ const normalizeHighlights = (value: unknown): NormalizedHighlightRecord | undefi
 
 const port = Number.parseInt(process.env.PORT ?? '8787', 10);
 
-getDatabase();
+getSupabaseClient();
 
 serve({
   fetch: app.fetch,

@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { getDatabase } from '../db/connection';
+import type { PostgrestError } from '@supabase/supabase-js';
+import { getSupabaseClient } from '../db/connection';
 
 type ProjectRow = {
   id: number;
@@ -9,7 +10,7 @@ type ProjectRow = {
   updated_at: string;
 };
 
-const db = getDatabase();
+const supabase = getSupabaseClient();
 
 const parseId = (value: string) => {
   const id = Number.parseInt(value, 10);
@@ -26,11 +27,23 @@ const requireName = (input: unknown) => {
   return input.trim();
 };
 
+const handleSupabaseError = (error: PostgrestError) => {
+  throw new HTTPException(500, { message: `Supabase error: ${error.message}` });
+};
+
 export const projectsRoute = new Hono();
 
-projectsRoute.get('/', (c) => {
-  const rows = db.prepare('SELECT id, name, created_at, updated_at FROM projects ORDER BY id ASC').all() as ProjectRow[];
-  return c.json(rows);
+projectsRoute.get('/', async (c) => {
+  const { data, error } = await supabase
+    .from('projects')
+    .select('id, name, created_at, updated_at')
+    .order('id', { ascending: true });
+
+  if (error) {
+    handleSupabaseError(error);
+  }
+
+  return c.json(data ?? []);
 });
 
 projectsRoute.post('/', async (c) => {
@@ -42,14 +55,22 @@ projectsRoute.post('/', async (c) => {
   }
 
   const name = requireName((body as Record<string, unknown>).name);
-  const result = db.prepare('INSERT INTO projects (name) VALUES (?)').run(name);
-  const project = db
-    .prepare('SELECT id, name, created_at, updated_at FROM projects WHERE id = ?')
-    .get(result.lastInsertRowid as number) as ProjectRow | undefined;
 
-  if (!project) {
+  const { data, error } = await supabase
+    .from('projects')
+    .insert({ name })
+    .select('id, name, created_at, updated_at')
+    .single();
+
+  if (error) {
+    handleSupabaseError(error);
+  }
+
+  if (!data) {
     throw new HTTPException(500, { message: 'Failed to load created project' });
   }
+
+  const project = data as ProjectRow;
 
   return c.json(project, 201);
 });
@@ -64,44 +85,58 @@ projectsRoute.patch('/:id', async (c) => {
     throw new HTTPException(400, { message: 'Invalid JSON payload' });
   }
 
-  const updates: string[] = [];
-  const values: unknown[] = [];
+  const updates: Record<string, unknown> = {};
 
   if (body.name !== undefined) {
     const name = requireName(body.name);
-    updates.push('name = ?');
-    values.push(name);
+    updates.name = name;
   }
 
-  if (updates.length === 0) {
+  if (Object.keys(updates).length === 0) {
     throw new HTTPException(400, { message: 'Nothing to update' });
   }
 
-  updates.push('updated_at = CURRENT_TIMESTAMP');
-  values.push(id);
+  updates.updated_at = new Date().toISOString();
 
-  const result = db.prepare(`UPDATE projects SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+  const { data, error } = await supabase
+    .from('projects')
+    .update(updates)
+    .eq('id', id)
+    .select('id, name, created_at, updated_at')
+    .single();
 
-  if (result.changes === 0) {
+  if (error) {
+    if (error.code === 'PGRST116') {
+      throw new HTTPException(404, { message: 'Project not found' });
+    }
+
+    handleSupabaseError(error);
+  }
+
+  if (!data) {
     throw new HTTPException(404, { message: 'Project not found' });
   }
 
-  const project = db
-    .prepare('SELECT id, name, created_at, updated_at FROM projects WHERE id = ?')
-    .get(id) as ProjectRow | undefined;
-
-  if (!project) {
-    throw new HTTPException(500, { message: 'Failed to load updated project' });
-  }
+  const project = data as ProjectRow;
 
   return c.json(project);
 });
 
-projectsRoute.delete('/:id', (c) => {
+projectsRoute.delete('/:id', async (c) => {
   const id = parseId(c.req.param('id'));
-  const result = db.prepare('DELETE FROM projects WHERE id = ?').run(id);
 
-  if (result.changes === 0) {
+  const { data, error } = await supabase
+    .from('projects')
+    .delete()
+    .eq('id', id)
+    .select('id')
+    .maybeSingle();
+
+  if (error) {
+    handleSupabaseError(error);
+  }
+
+  if (!data) {
     throw new HTTPException(404, { message: 'Project not found' });
   }
 
