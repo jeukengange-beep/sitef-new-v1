@@ -8,7 +8,7 @@ import { projectsRoute } from './routes/projects';
 
 const app = new Hono();
 
-const allowedOrigin = process.env.CORS_ORIGIN ?? 'http://localhost:5173';
+const allowedOrigin = process.env.CORS_ORIGIN;
 
 app.onError((err, c) => {
   if (err instanceof HTTPException) {
@@ -22,8 +22,19 @@ app.onError((err, c) => {
 
 const corsMiddleware = async (c: Context, next: () => Promise<void>) => {
   const requestOrigin = c.req.header('Origin');
-  if (!requestOrigin || requestOrigin === allowedOrigin) {
-    c.res.headers.set('Access-Control-Allow-Origin', requestOrigin ?? allowedOrigin);
+
+  if (requestOrigin) {
+    if (!allowedOrigin) {
+      throw new HTTPException(500, { message: 'CORS origin is not configured' });
+    }
+
+    if (requestOrigin !== allowedOrigin) {
+      return c.json({ error: 'Origin not allowed' }, 403);
+    }
+
+    c.res.headers.set('Access-Control-Allow-Origin', allowedOrigin);
+  } else if (allowedOrigin) {
+    c.res.headers.set('Access-Control-Allow-Origin', allowedOrigin);
   }
   c.res.headers.append('Vary', 'Origin');
   c.res.headers.set('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
