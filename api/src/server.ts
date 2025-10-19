@@ -184,6 +184,49 @@ app.get('/search', async (c) => {
   return c.json({ hits });
 });
 
+app.get('/media/pexels', async (c) => {
+  const query = c.req.query('query')?.trim();
+
+  if (!query) {
+    throw new HTTPException(400, { message: 'Query parameter "query" is required' });
+  }
+
+  const page = parsePositiveInt(c.req.query('page'), 1);
+  const perPage = parsePositiveInt(c.req.query('per_page'), 10);
+
+  const apiKey = process.env.PEXELS_API_KEY;
+
+  if (!apiKey) {
+    throw new HTTPException(500, { message: 'Pexels API key is not configured' });
+  }
+
+  const url = new URL('https://api.pexels.com/v1/search');
+  url.searchParams.set('query', query);
+  url.searchParams.set('page', String(page));
+  url.searchParams.set('per_page', String(perPage));
+
+  let response: Awaited<ReturnType<typeof fetch>>;
+  try {
+    response = await fetch(url, {
+      headers: {
+        Authorization: apiKey,
+      },
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : 'Unknown error';
+    throw new HTTPException(502, { message: `Failed to reach Pexels API: ${reason}` });
+  }
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new HTTPException(502, { message: `Pexels API error: ${errorText}` });
+  }
+
+  const payload = (await response.json()) as PexelsSearchResponse;
+
+  return c.json(normalizePexelsResponse(payload, page, perPage));
+});
+
 const extractTextFromResponse = (payload: Record<string, unknown>): string | undefined => {
   const output = payload.output;
   if (Array.isArray(output)) {
@@ -324,6 +367,120 @@ const normalizeHighlights = (value: unknown): NormalizedHighlightRecord | undefi
   }
 
   return Object.keys(result).length > 0 ? result : undefined;
+};
+
+const parsePositiveInt = (value: string | undefined, fallback: number): number => {
+  if (!value) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+
+  if (Number.isNaN(parsed) || parsed <= 0) {
+    return fallback;
+  }
+
+  return parsed;
+};
+
+type PexelsPhotoSrc = {
+  original?: string;
+  large?: string;
+  medium?: string;
+  small?: string;
+};
+
+type PexelsPhoto = {
+  id?: number;
+  photographer?: string;
+  url?: string;
+  src?: PexelsPhotoSrc;
+};
+
+type PexelsSearchResponse = {
+  photos?: PexelsPhoto[];
+  page?: number;
+  per_page?: number;
+  total_results?: number;
+};
+
+type NormalizedPexelsPhoto = {
+  id?: number;
+  photographer?: string;
+  url?: string;
+  src: {
+    original?: string;
+    large?: string;
+    medium?: string;
+    small?: string;
+  };
+};
+
+type NormalizedPexelsResponse = {
+  photos: NormalizedPexelsPhoto[];
+  page: number;
+  per_page: number;
+  total_results: number;
+};
+
+const normalizePexelsResponse = (
+  payload: PexelsSearchResponse,
+  fallbackPage: number,
+  fallbackPerPage: number,
+): NormalizedPexelsResponse => {
+  const photos = Array.isArray(payload.photos)
+    ? payload.photos.map(normalizePexelsPhoto).filter((photo): photo is NormalizedPexelsPhoto => Boolean(photo))
+    : [];
+
+  const page = typeof payload.page === 'number' && payload.page > 0 ? payload.page : fallbackPage;
+  const perPage = typeof payload.per_page === 'number' && payload.per_page > 0 ? payload.per_page : fallbackPerPage;
+  const totalResults = typeof payload.total_results === 'number' && payload.total_results >= 0 ? payload.total_results : photos.length;
+
+  return {
+    photos,
+    page,
+    per_page: perPage,
+    total_results: totalResults,
+  };
+};
+
+const normalizePexelsPhoto = (photo: PexelsPhoto): NormalizedPexelsPhoto | undefined => {
+  if (!photo || typeof photo !== 'object') {
+    return undefined;
+  }
+
+  const id = typeof photo.id === 'number' ? photo.id : undefined;
+  const photographer = typeof photo.photographer === 'string' ? photo.photographer : undefined;
+  const url = typeof photo.url === 'string' ? photo.url : undefined;
+  const src = normalizePexelsPhotoSrc(photo.src);
+
+  return {
+    id,
+    photographer,
+    url,
+    src,
+  };
+};
+
+const normalizePexelsPhotoSrc = (src: PexelsPhotoSrc | undefined): NormalizedPexelsPhoto['src'] => {
+  const result: NormalizedPexelsPhoto['src'] = {};
+
+  if (src && typeof src === 'object') {
+    if (typeof src.original === 'string') {
+      result.original = src.original;
+    }
+    if (typeof src.large === 'string') {
+      result.large = src.large;
+    }
+    if (typeof src.medium === 'string') {
+      result.medium = src.medium;
+    }
+    if (typeof src.small === 'string') {
+      result.small = src.small;
+    }
+  }
+
+  return result;
 };
 
 const port = Number.parseInt(process.env.PORT ?? '8787', 10);
