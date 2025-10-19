@@ -10,6 +10,15 @@ const app = new Hono();
 
 const allowedOrigin = process.env.CORS_ORIGIN;
 
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_REQUESTS = 5;
+type RateLimitRecord = {
+  count: number;
+  windowStart: number;
+};
+
+const rateLimitBuckets = new Map<string, RateLimitRecord>();
+
 app.onError((err, c) => {
   if (err instanceof HTTPException) {
     const status = err.status ?? 500;
@@ -54,6 +63,8 @@ app.get('/health', (c) => c.json({ ok: true }));
 app.route('/projects', projectsRoute);
 
 app.post('/ai/complete', async (c) => {
+  enforceRateLimit(c);
+
   const prompt = await readPromptFromBody(c);
 
   const apiKey = process.env.OPENAI_API_KEY;
@@ -492,6 +503,43 @@ const normalizePexelsPhotoSrc = (src: PexelsPhotoSrc | undefined): NormalizedPex
   }
 
   return result;
+};
+
+const enforceRateLimit = (c: Context): void => {
+  const key = getRateLimitKey(c);
+  const now = Date.now();
+  const existing = rateLimitBuckets.get(key);
+
+  if (!existing || now - existing.windowStart >= RATE_LIMIT_WINDOW_MS) {
+    rateLimitBuckets.set(key, {
+      count: 1,
+      windowStart: now,
+    });
+    return;
+  }
+
+  if (existing.count >= RATE_LIMIT_MAX_REQUESTS) {
+    throw new HTTPException(429, { message: 'Rate limit exceeded' });
+  }
+
+  existing.count += 1;
+};
+
+const getRateLimitKey = (c: Context): string => {
+  const headerCandidates = [
+    c.req.header('cf-connecting-ip'),
+    c.req.header('x-forwarded-for')?.split(',')[0]?.trim(),
+    c.req.header('x-real-ip'),
+    c.req.header('x-client-ip'),
+  ];
+
+  for (const candidate of headerCandidates) {
+    if (candidate && candidate.length > 0) {
+      return candidate;
+    }
+  }
+
+  return 'global';
 };
 
 const port = Number.parseInt(process.env.PORT ?? '8787', 10);
