@@ -1,146 +1,44 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import type { PostgrestError } from '@supabase/supabase-js';
-import { getSupabaseClient } from '../db/connection.js';
+import { supabase } from '../db/connection.js';
 
-type ProjectRow = {
-  id: number;
-  name: string;
-  created_at: string;
-  updated_at: string;
-};
+const r = new Hono();
 
-const supabase = getSupabaseClient();
-
-const parseId = (value: string) => {
-  const id = Number.parseInt(value, 10);
-  if (!Number.isInteger(id) || id <= 0) {
-    throw new HTTPException(400, { message: 'Invalid project id' });
-  }
-  return id;
-};
-
-const requireName = (input: unknown) => {
-  if (typeof input !== 'string' || input.trim().length === 0) {
-    throw new HTTPException(400, { message: 'Name is required' });
-  }
-  return input.trim();
-};
-
-const handleSupabaseError = (error: PostgrestError) => {
-  throw new HTTPException(500, { message: `Supabase error: ${error.message}` });
-};
-
-const projects = new Hono();
-
-projects.get('/', async (c) => {
-  const { data, error } = await supabase
-    .from('projects')
-    .select('id, name, created_at, updated_at')
-    .order('id', { ascending: true });
-
-  if (error) {
-    handleSupabaseError(error);
-  }
-
+// GET /projects
+r.get('/', async (c) => {
+  const { data, error } = await supabase.from('projects').select('*').order('id', { ascending: false });
+  if (error) throw new HTTPException(500, { message: error.message });
   return c.json(data ?? []);
 });
 
-projects.post('/', async (c) => {
-  let body: unknown;
-  try {
-    body = await c.req.json();
-  } catch (error) {
-    throw new HTTPException(400, { message: 'Invalid JSON payload' });
-  }
-
-  const name = requireName((body as Record<string, unknown>).name);
-
-  const { data, error } = await supabase
-    .from('projects')
-    .insert({ name })
-    .select('id, name, created_at, updated_at')
-    .single();
-
-  if (error) {
-    handleSupabaseError(error);
-  }
-
-  if (!data) {
-    throw new HTTPException(500, { message: 'Failed to load created project' });
-  }
-
-  const project = data as ProjectRow;
-
-  return c.json(project, 201);
+// POST /projects {name}
+r.post('/', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const name = String(body?.name || '').trim();
+  if (!name) throw new HTTPException(400, { message: 'name required' });
+  const { data, error } = await supabase.from('projects').insert([{ name }]).select().single();
+  if (error) throw new HTTPException(500, { message: error.message });
+  return c.json(data, 201);
 });
 
-projects.patch('/:id', async (c) => {
-  const id = parseId(c.req.param('id'));
-
-  let body: Record<string, unknown>;
-  try {
-    body = (await c.req.json()) as Record<string, unknown>;
-  } catch (error) {
-    throw new HTTPException(400, { message: 'Invalid JSON payload' });
-  }
-
-  const updates: Record<string, unknown> = {};
-
-  if (body.name !== undefined) {
-    const name = requireName(body.name);
-    updates.name = name;
-  }
-
-  if (Object.keys(updates).length === 0) {
-    throw new HTTPException(400, { message: 'Nothing to update' });
-  }
-
-  updates.updated_at = new Date().toISOString();
-
-  const { data, error } = await supabase
-    .from('projects')
-    .update(updates)
-    .eq('id', id)
-    .select('id, name, created_at, updated_at')
-    .single();
-
-  if (error) {
-    if (error.code === 'PGRST116') {
-      throw new HTTPException(404, { message: 'Project not found' });
-    }
-
-    handleSupabaseError(error);
-  }
-
-  if (!data) {
-    throw new HTTPException(404, { message: 'Project not found' });
-  }
-
-  const project = data as ProjectRow;
-
-  return c.json(project);
+// PATCH /projects/:id {name?}
+r.patch('/:id', async (c) => {
+  const id = Number(c.req.param('id'));
+  const body = await c.req.json().catch(() => ({}));
+  const name = body?.name ? String(body.name).trim() : undefined;
+  if (!id || !name) throw new HTTPException(400, { message: 'invalid payload' });
+  const { data, error } = await supabase.from('projects').update({ name }).eq('id', id).select().single();
+  if (error) throw new HTTPException(500, { message: error.message });
+  return c.json(data);
 });
 
-projects.delete('/:id', async (c) => {
-  const id = parseId(c.req.param('id'));
-
-  const { data, error } = await supabase
-    .from('projects')
-    .delete()
-    .eq('id', id)
-    .select('id')
-    .maybeSingle();
-
-  if (error) {
-    handleSupabaseError(error);
-  }
-
-  if (!data) {
-    throw new HTTPException(404, { message: 'Project not found' });
-  }
-
+// DELETE /projects/:id
+r.delete('/:id', async (c) => {
+  const id = Number(c.req.param('id'));
+  if (!id) throw new HTTPException(400, { message: 'invalid id' });
+  const { error } = await supabase.from('projects').delete().eq('id', id);
+  if (error) throw new HTTPException(500, { message: error.message });
   return c.body(null, 204);
 });
 
-export default projects;
+export default r;

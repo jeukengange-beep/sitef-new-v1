@@ -4,7 +4,7 @@ import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { serve } from '@hono/node-server';
 import projects from './routes/projects.js';
-import { getSupabaseClient } from './db/connection.js';
+import { supabase } from './db/connection.js';
 
 const app = new Hono();
 
@@ -31,12 +31,8 @@ app.onError((err, c) => {
   return c.json({ error: 'server_error' }, 500);
 });
 
-try {
-  getSupabaseClient();
+if (supabase) {
   console.log('DB=supabase');
-} catch (error) {
-  console.error('Failed to initialize Supabase client', error);
-  throw error;
 }
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
