@@ -1,33 +1,8 @@
-import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { createClient } from '@supabase/supabase-js';
 
-let client: SupabaseClient | null = null;
-
-const resolveSupabaseConfig = () => {
-  const url = process.env.SUPABASE_URL?.trim();
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
-
-  if (!url) {
-    throw new Error('SUPABASE_URL is not configured');
-  }
-
-  if (!serviceRoleKey) {
-    throw new Error('SUPABASE_SERVICE_ROLE_KEY is not configured');
-  }
-
-  return { url, serviceRoleKey };
-};
-
-export const getSupabaseClient = (): SupabaseClient => {
-  if (client) {
-    return client;
-  }
-
-  const { url, serviceRoleKey } = resolveSupabaseConfig();
-  client = createClient(url, serviceRoleKey, {
-    auth: {
-      persistSession: false,
-    },
-  });
-
-  return client;
-};
+const url = process.env.SUPABASE_URL!;
+const key = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+if (!url || !key) {
+  console.warn('Supabase env missing. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY');
+}
+export const supabase = createClient(url, key, { auth: { persistSession: false } });
