@@ -1,0 +1,23 @@
+{
+  "name": "sitef-api",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsx watch src/server.ts",
+    "migrate": "tsx src/scripts/migrate.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.9.1",
+    "better-sqlite3": "^9.1.1",
+    "dotenv": "^16.4.5",
+    "hono": "^4.5.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.7",
+    "tsx": "^4.7.1",
+    "typescript": "^5.4.5"
+  }
+}
