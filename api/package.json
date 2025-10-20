@@ -11,11 +11,11 @@
   "dependencies": {
     "hono": "^4.6.5",
     "@hono/node-server": "^1.11.3",
-    "@supabase/supabase-js": "^2.46.1"
+    "@supabase/supabase-js": "^2.46.1",
+    "@types/node": "^22.7.4"
   },
   "devDependencies": {
     "typescript": "^5.6.3",
-    "@types/node": "^22.7.4",
     "tsx": "^4.16.0"
   }
 }
