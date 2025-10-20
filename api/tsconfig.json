@@ -10,7 +10,7 @@
     "skipLibCheck": true,
     "strict": false,
     "noImplicitAny": false,
-    "types": ["node"]
+    "types": ["node"] // garder ceci
   },
   "include": ["src/**/*"]
 }
